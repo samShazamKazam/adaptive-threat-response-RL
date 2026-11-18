@@ -1,0 +1,10 @@
+{
+    "total_timesteps": 800000,
+    "horizon": 2048,
+    "gamma": 0.99,
+    "lam": 0.95,
+    "seed": 0,
+    "max_steps": 50,
+    "max_queue": 20,
+    "budget": 100.0
+}
