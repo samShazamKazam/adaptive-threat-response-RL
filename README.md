@@ -57,19 +57,19 @@ This is a genuine **sequential decision problem**: each action affects the state
 
 ## Environment Design
 
-This is a Markov Decision Process (MDP) problem describing a stochastic dynamical system. Note that some properties are hidden from the agent, used by the system in reward calculation  (i.e. alert["is_threat"]). The agent will face 20 alerts per episode, each has five properties.
+This is a Markov Decision Process (MDP) problem describing a stochastic dynamical system. Note that some properties are hidden from the agent, used by the system in reward calculation  (i.e. alert["is_threat"]). The agent will face 20 alerts per episode, each has six properties.
 
 ### Observation Space (102 dimensions)
 
-20 alerts × 5 features = 100
+20 alerts × 6 features = 120
 
 budget remaining (normalized) = 1
 
 step fraction = 1
 
-So total is 100 + 1 + 1 = 102 dimensions
+So total is 120 + 1 + 1 = 122 dimensions
 
-Each alert has 5 features:
+Each alert has 6 features:
 
 | Feature | Range | Meaning |
 | :--- | :--- | :--- |
@@ -78,6 +78,7 @@ Each alert has 5 features:
 | `asset_criticality` | [0, 1] | How important the affected asset is |
 | `age` | [0, 1] | Normalized steps since arrival |
 | `investigated` | {0, 1} | Whether the alert has been investigated |
+| `revealed_threat` | {0, 1} | Whether it's a threat |
 
 ### Action Space (5 discrete actions)
 
@@ -96,17 +97,19 @@ Each alert has 5 features:
 | Contain a real threat | +10.0 |
 | Escalate a real threat | +5.0 |
 | Correctly dismiss a benign alert | +1.0 |
-| Investigate and reveal a threat | +0.1 |
-| Investigate and reveal benign | −0.1 |
+| First investigation | 0.0 |
+| Repeated investigation of an already-investigated alert | −500.0 |
 | Contain a benign alert | −5.0 |
 | Escalate a benign alert | −1.0 |
 | Dismiss a real threat | −10.0 |
-| Budget exhausted | −20.0 |
+| Budget below 30% remaining | Additional penalty increases gradually as the budget approaches zero |
 | Unresolved threats at episode end | −2.0 each |
+
+Reaching zero budget terminates the episode; there is no separate fixed −20.0 budget-exhaustion reward penalty.
 
 ### Budget
 
-Episodes start with a budget of **100.0**. Each action deducts its cost. If the budget hits zero, the episode terminates with a −20 penalty.
+Episodes start with a budget of **100.0**. Each action deducts its cost. As the agent is getting close to depleting its budget, a soft penalty applies, adding to the pressure to maximize reward using the remaining budget.
 
 The budget is calibrated so a straightforward strategy (investigate, then contain) uses roughly 60% of it. A sloppy policy runs out while a good policy succeeds with budget to spare.
 
@@ -137,7 +140,7 @@ PPO is implemented from scratch in PyTorch so every component is visible and exp
 ### The Network
 
 Observation (102)
-??? why do we use Tanh? ???
+
 ```
    │
 ┌──▼──┐
@@ -149,10 +152,9 @@ Observation (102)
 Linear(128, 5)    Linear(128, 1)
 (logits)          (state value)
 ```
+I am using Tanh since it's zero-centered with output range (-1, 1) and we only have two NN layers so no concern of the gradient is vanishing. 
 
 **Initialization gains:**
-
-??? what is the gain and why do we need it?
 
 The gain is a scaling factor applied after orthogonalization. It controls the magnitude of the layer's output.
 
@@ -160,11 +162,12 @@ For the actor head, the output goes through a softmax (via Categorical(logits=lo
 
 | Layer | Gain | Why |
 | :--- | :--- | :--- |
-| Trunk | √2 | Preserves variance through hidden layers |
-| Actor | 0.01 | Small logits → near-uniform policy → good exploration |
+| Actor | 0.01 | Small logits → near-uniform policy → good exploration , small gain to start with low confident policy|
 | Critic | 1.0 | Must output values across the full range of returns |
 
 ### The Objective
+
+I am using PPO clipping.
 
 ```python
 ratio = exp(log_probs_new - log_probs_old)
@@ -210,8 +213,8 @@ python sanity_check.py
 Expected output:
 
 ```
-obs shape: (102,)
-action space: Discrete(5)
+obs shape: (122,)
+action space: Discrete(6)
 Random episode return: -28.40
 Info: {'incidents_resolved': 3, 'threats_missed': 7, 'budget_remaining': 12.5, 'queue_length': 8}
 ```
@@ -315,21 +318,6 @@ PPO training is not perfectly deterministic even with fixed seeds (GPU operation
 pytest tests/ -v
 ```
 
-```python
-# tests/test_regression.py
-def test_policy_does_not_regress():
-    policy = load_trained_policy("models/threat_ppo_scratch.pt")
-    mean_r, std_r, resolved, missed = run_policy(policy, episodes=50, seed=42)
-
-    assert mean_r >= 30.0, f"Mean return regressed: {mean_r:.2f}"
-    assert missed <= 1.5, f"Missed threats regressed: {missed:.2f}"
-    assert resolved >= 8.5, f"Resolved incidents regressed: {resolved:.2f}"
-
-def test_beats_heuristic():
-    ppo_r = run_policy(load_trained_policy(...), episodes=50, seed=42)[0]
-    heur_r = run_policy(heuristic_policy, episodes=50, seed=42)[0]
-    assert ppo_r > heur_r
-```
 
 ### CI workflow (.github/workflows/test.yml):
 ```yaml
@@ -369,7 +357,7 @@ On RL engineering:
 
   -  Reward design is empirical, not theoretical. The budget and reward magnitudes required tuning against observed behavior.
 
-  -  Credit assignment is the hard part. An INVESTIGATE action gets credit for a CONTAIN that happens two steps later—GAE is what propagates that credit backward.
+  -  Delayed credit assignment is the hard part. An INVESTIGATE action gets credit for a CONTAIN that happens two steps later—GAE is what propagates that credit backward.
 
   -  PPO's stability comes from clipping. Without it, large advantages × large ratios produce destructive updates.
 
@@ -410,3 +398,25 @@ Ideas for extending the project:
     The 32 Implementation Details of PPO — the reference for the gain values and other implementation choices
 
 ## License
+
+MIT License
+
+Copyright (c) 2026 
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
